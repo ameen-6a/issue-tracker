@@ -1,0 +1,7 @@
+.idea
+myproject/__pycache__
+myproject/machine/__pycache__
+myproject/machine/iomodels/__pycache__
+myproject/machine/iomodels/request/__pycache__
+myproject/machine/migrations/__pycache__
+myproject/myproject/__pycache__

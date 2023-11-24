@@ -13,6 +13,14 @@ def get_request_body(req_body) -> dict:
         print('Error while parsing request body: {}'.format(err))
 
 
+def get_response_body(resp_body) -> dict:
+    try:
+        body_unicode = resp_body.content.decode('utf-8')
+        return json.loads(body_unicode)
+    except TypeError as err:
+        print('Error while parsing request body: {}'.format(err))
+
+
 def check_post_method(request):
     if request.method != 'POST':
         raise ViewDoesNotExist("This method have not been implemented yet")

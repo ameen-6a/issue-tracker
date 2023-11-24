@@ -4,6 +4,7 @@ import json
 import sqlite3
 from django.http import HttpResponse
 from django.http import JsonResponse
+from django.db import transaction
 
 from .iomodels.request.Validator import validate_not_null
 from .models import Detail, Issue, IssueHistory
@@ -20,11 +21,15 @@ def post_register_machine(request):
     try:
         machine_detail = Detail(name=body['name'])
         machine_detail.save()
+
+        response = {
+            "id": machine_detail.id,
+            "name": body['name']
+        }
+        return JsonResponse(response, safe=False)
     except ValueError as err:
         print("Cannot register machine: {}".format(err))
         return HttpResponse(status=500)
-
-    return HttpResponse("Successful register machine %s." % body['name'])
 
 
 def post_create_issue_to_machine(request):
@@ -51,14 +56,13 @@ def post_create_issue_to_machine(request):
         print("Cannot add issue: {}".format(err))
         return HttpResponse(status=500)
 
-    return HttpResponse("Successful add issue to machine ID %s." % body['machine_id'])
+    return HttpResponse(status=200)
 
 
 def get_all_reported_query(request, sql_statement: str):
     key_list = request.GET.keys()
 
-    if ('limit' not in key_list and len(key_list) > 2) or len(key_list) <= 2:
-        sql_statement += "WHERE"
+    sql_statement += "WHERE "
 
     if 'machine_id' in key_list:
         sql_statement += " md.id = '{}' and".format(request.GET['machine_id'])
@@ -89,8 +93,8 @@ def get_all_reported_issues(request):
     sql_statement = get_all_reported_query(request, sql_statement)
 
     try:
-        count_all_row = Detail.objects.raw(sql_statement.replace("*", "md.id, COUNT(*) as counter"))[0]
-        all_row = count_all_row.counter
+        count_all_row = call_sql(sql_statement.replace("*", "COUNT(*) as id"))[0]
+        all_row = count_all_row[0]
     except IndexError as err:
         print("cannot retrieve all rows number: {}".format(err))
         all_row = 0
@@ -104,11 +108,7 @@ def get_all_reported_issues(request):
 
             sql_statement = sql_statement + " LIMIT {} OFFSET {}".format(str(limit), str(offset))
 
-            with sqlite3.connect("db.myproject") as conn:
-                c = conn.cursor()
-                c.execute(sql_statement)
-                all_detail = c.fetchall()
-                c.close()
+            all_detail = call_sql(sql_statement)
 
             all_detail_list = construct_output(all_detail)
 
@@ -120,11 +120,7 @@ def get_all_reported_issues(request):
                 'info': all_detail_list
             }
         else:
-            with sqlite3.connect("db.myproject") as conn:
-                c = conn.cursor()
-                c.execute(sql_statement)
-                all_detail = c.fetchall()
-                c.close()
+            all_detail = call_sql(sql_statement)
 
             all_detail_list = construct_output(all_detail)
 
@@ -137,6 +133,15 @@ def get_all_reported_issues(request):
     except ValueError as err:
         print("Cannot get all issues: {}".format(err))
         return HttpResponse(status=500)
+
+
+def call_sql(sql_statement):
+    with sqlite3.connect("db.myproject") as conn:
+        c = conn.cursor()
+        c.execute(sql_statement)
+        all_detail = c.fetchall()
+        c.close()
+    return all_detail
 
 
 def construct_output(all_detail):
@@ -154,7 +159,7 @@ def construct_output(all_detail):
     return all_detail_list
 
 
-def get_count_issues_by_machine(request):
+def post_count_issues_by_machine(request):
     check_post_method(request)
 
     body = get_request_body(request)
@@ -187,6 +192,7 @@ def get_count_issues_by_machine(request):
         return JsonResponse(output, safe=False)
     except ValueError as err:
         print("Error while trying to retrieve count issue by machine: {}".format(err))
+        return HttpResponse(status=500)
 
 
 def get_top_k_words(request):
@@ -218,13 +224,24 @@ def get_top_k_words(request):
     return JsonResponse(output, safe=False)
 
 
-def resolved_issue(request, id):
+def resolved_issue(request, id: int):
     if request.method == 'PUT':
+        body = get_request_body(request)
+
         # Upsert function if issue resolved already it will be skipped
         try:
-            history, create = IssueHistory.objects.update_or_create(id=id)
-            if create:
-                create.save()
+            issue = Issue.objects.select_for_update().get(id=id)
+
+            with transaction.atomic():
+                issue.status = "Resolved"
+                issue.save()
+
+            history = IssueHistory(
+                issue_id=issue,
+                status='Resolved',
+                comment=body['comment']
+            )
+            history.save()
         except ValueError as err:
             print("Error while put resolved issue: {}".format(err))
 
@@ -242,16 +259,16 @@ def get_history(id):
                 LEFT JOIN machine_issue mi ON md.id = mi.machine_id_id
                 WHERE mi.id = '{}'
             """.format(str(id))
-        with sqlite3.connect("db.myproject") as conn:
-            c = conn.cursor()
-            c.execute(sql_statement)
-            all_detail = c.fetchall()
-            c.close()
+        all_detail = call_sql(sql_statement)
+
         output_machine_and_issue = construct_output(all_detail)[0]
         output_machine_and_issue['history'] = []
-        histories = IssueHistory.objects.filter(issue_id=output_machine_and_issue['issue_id']).values('status', 'timestamp',
-                                                                                                      'comment')
+
+        histories = IssueHistory.objects.filter(issue_id=output_machine_and_issue['issue_id']).values('status', 'timestamp', 'comment')
+
         output_machine_and_issue['history'].extend([hist for hist in histories])
+
         return JsonResponse(output_machine_and_issue, safe=False)
     except ValueError as err:
         print("Error while trying to get history of resolved issue: {}".format(err))
+        return HttpResponse(status=500)
